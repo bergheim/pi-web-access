@@ -3,22 +3,15 @@ import net from "node:net";
 import { activityMonitor } from "./activity.ts";
 import { redactCredential, resolveCredential } from "./credential-source.ts";
 import type { ExtractedContent, ExtractOptions } from "./extract.ts";
-import { loadSsrfConfig, validateRemoteUrl, type Lookup } from "./ssrf-protection.ts";
+import { fetchRemoteUrl, loadSsrfConfig, validateRemoteUrl, type Lookup, type SsrfConfig } from "./ssrf-protection.ts";
 import { getWebSearchConfigPath } from "./utils.ts";
 
 const CONFIG_PATH = getWebSearchConfigPath();
 const EXTRACT_TIMEOUT_MS = 60_000;
-const DEFAULT_MAX_REDIRECTS = 5;
-const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MARKDOWN_FILTER = "fit";
 
-export interface Crawl4aiSsrfOptions {
-	allowRanges: string[];
-	trustEnvProxy: boolean;
-}
-
 export interface Crawl4aiExtractOptions extends Pick<ExtractOptions, "timeoutMs" | "lookup"> {
-	ssrf?: Crawl4aiSsrfOptions;
+	ssrf?: SsrfConfig;
 }
 
 interface Crawl4aiConfig {
@@ -113,11 +106,9 @@ function isAbortError(err: unknown): boolean {
 	return errorMessage(err).toLowerCase().includes("abort");
 }
 
-function ssrfOptions(options?: Crawl4aiExtractOptions): { lookup?: Lookup; allowRanges: string[]; trustEnvProxy: boolean } {
-	const config = loadSsrfConfig();
+function ssrfOptions(options?: Crawl4aiExtractOptions): SsrfConfig & { lookup?: Lookup } {
 	return {
-		allowRanges: options?.ssrf?.allowRanges ?? config.allowRanges,
-		trustEnvProxy: options?.ssrf?.trustEnvProxy ?? config.trustEnvProxy,
+		...(options?.ssrf ?? loadSsrfConfig()),
 		...(options?.lookup ? { lookup: options.lookup } : {}),
 	};
 }
@@ -129,44 +120,8 @@ function isLoopbackApiUrl(url: URL): boolean {
 	return hostname.split(".")[0] === "127";
 }
 
-function withoutSensitiveHeaders(headers: Record<string, string>): Record<string, string> {
-	const next = { ...headers };
-	delete next.Authorization;
-	delete next.authorization;
-	delete next.Cookie;
-	delete next.cookie;
-	return next;
-}
-
-async function fetchCrawl4aiApi(
-	url: string,
-	init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal },
-	options: Crawl4aiExtractOptions | undefined,
-): Promise<Response> {
-	const apiSsrf = { ...ssrfOptions(options), allowLoopback: isLoopbackApiUrl(new URL(url)) };
-	let current = await validateRemoteUrl(url, apiSsrf);
-	let headers = init.headers;
-	for (let redirects = 0; redirects <= DEFAULT_MAX_REDIRECTS; redirects++) {
-		const response = await fetch(current, { ...init, headers, redirect: "manual" });
-		if (!REDIRECT_STATUSES.has(response.status)) return response;
-
-		const location = response.headers.get("location");
-		if (!location) return response;
-		if (redirects === DEFAULT_MAX_REDIRECTS) throw new Error(`Too many redirects fetching ${current.toString()}`);
-
-		const next = await validateRemoteUrl(new URL(location, current), apiSsrf);
-		if (next.origin !== current.origin) headers = withoutSensitiveHeaders(headers);
-		current = next;
-	}
-	throw new Error(`Too many redirects fetching ${current.toString()}`);
-}
-
 function firstHeadingTitle(markdown: string): string {
-	for (const line of markdown.split("\n")) {
-		const match = /^#\s+(.+?)\s*$/.exec(line.trim());
-		if (match) return match[1];
-	}
-	return "";
+	return /^[ \t]*#[ \t]+(\S.*?)[ \t\r]*$/m.exec(markdown)?.[1] ?? "";
 }
 
 export function isCrawl4aiAvailable(): boolean {
@@ -179,19 +134,24 @@ export async function extractWithCrawl4ai(
 	options?: Crawl4aiExtractOptions,
 ): Promise<ExtractedContent | null> {
 	const baseUrl = requireBaseUrl();
-	await validateRemoteUrl(url, ssrfOptions(options));
+	const ssrf = ssrfOptions(options);
+	await validateRemoteUrl(url, ssrf);
 	const token = await getApiToken(signal);
 	const headers: Record<string, string> = { "Content-Type": "application/json" };
 	if (token) headers.Authorization = `Bearer ${token}`;
-	const requestUrl = `${baseUrl}/md`;
-	const activityId = activityMonitor.logStart({ type: "fetch", url: requestUrl });
+	const requestUrl = new URL(`${baseUrl}/md`);
+	const activityId = activityMonitor.logStart({ type: "fetch", url: requestUrl.toString() });
 	try {
-		const response = await fetchCrawl4aiApi(requestUrl, {
+		const response = await fetchRemoteUrl(requestUrl, {
 			method: "POST",
 			headers,
 			body: JSON.stringify({ url, f: MARKDOWN_FILTER }),
 			signal: requestSignal(options?.timeoutMs ?? EXTRACT_TIMEOUT_MS, signal),
-		}, options);
+		}, {
+			...ssrf,
+			allowLoopback: isLoopbackApiUrl(requestUrl),
+			onRedirect: ({ from, to, init }) => to.origin === from.origin ? init : { ...init, headers: { "Content-Type": "application/json" } },
+		});
 		if (!response.ok) {
 			const text = await response.text().catch(() => "");
 			throw new Error(`Crawl4AI md error ${response.status}: ${redactCredential(text.slice(0, 300), token)}`);

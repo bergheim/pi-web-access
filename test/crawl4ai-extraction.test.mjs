@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,11 +8,15 @@ import { test } from "node:test";
 const crawl4aiModuleUrl = new URL("../crawl4ai.ts", import.meta.url).href;
 const extractModuleUrl = new URL("../extract.ts", import.meta.url).href;
 
-function runChild(script, env = {}) {
-	const childEnv = { ...process.env };
+// Each child gets its own empty config home so a developer's real web-search.json never leaks into a test.
+function runChild(script, env = {}, config = null) {
+	const home = mkdtempSync(join(tmpdir(), "pi-web-access-crawl4ai-"));
+	if (config) writeFileSync(join(home, "web-search.json"), JSON.stringify(config) + "\n", "utf8");
+	const childEnv = { ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: home };
 	for (const key of [
-		"PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "CRAWL4AI_BASE_URL", "CRAWL4AI_API_TOKEN",
-		"FIRECRAWL_BASE_URL", "FIRECRAWL_API_KEY", "PARALLEL_API_KEY", "TINYFISH_API_KEY", "GEMINI_API_KEY",
+		"XDG_CONFIG_HOME", "CRAWL4AI_BASE_URL", "CRAWL4AI_API_TOKEN",
+		"FIRECRAWL_BASE_URL", "FIRECRAWL_API_KEY", "FIRECRAWL_API_VERSION", "FIRECRAWL_FRESH_SCRAPE",
+		"PARALLEL_API_KEY", "TINYFISH_API_KEY", "GEMINI_API_KEY",
 		"BRIGHTDATA_API_KEY", "KAGI_API_KEY", "OLLAMA_API_KEY", "BRIGHTDATA_UNLOCKER_ZONE",
 	]) delete childEnv[key];
 	Object.assign(childEnv, env);
@@ -25,12 +29,6 @@ function runChild(script, env = {}) {
 }
 
 const PUBLIC_LOOKUP = `async () => [{ address: "93.184.216.34", family: 4 }]`;
-
-async function configHome(config) {
-	const home = await mkdtemp(join(tmpdir(), "pi-web-access-crawl4ai-"));
-	await writeFile(join(home, "web-search.json"), JSON.stringify(config) + "\n", "utf8");
-	return home;
-}
 
 test("Crawl4AI extraction posts a fit markdown request with a bearer token and titles from the first heading", async () => {
 	const child = runChild(`
@@ -80,7 +78,6 @@ test("Crawl4AI extraction sends no Authorization header without a token and retu
 });
 
 test("Crawl4AI resolves the token from a config credential source", async () => {
-	const home = await configHome({ crawl4aiBaseUrl: "https://crawl.example.com", crawl4aiApiToken: "$CRAWL4AI_TEST_TOKEN" });
 	const child = runChild(`
 		let authorization = null;
 		globalThis.fetch = async (_url, init) => {
@@ -90,7 +87,7 @@ test("Crawl4AI resolves the token from a config credential source", async () => 
 		const { extractWithCrawl4ai } = await import(${JSON.stringify(crawl4aiModuleUrl)});
 		const result = await extractWithCrawl4ai("https://example.com/configured", undefined, { lookup: ${PUBLIC_LOOKUP} });
 		console.log(JSON.stringify({ authorization, result }));
-	`, { HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: home, CRAWL4AI_TEST_TOKEN: "from-env-source" });
+	`, { CRAWL4AI_TEST_TOKEN: "from-env-source" }, { crawl4aiBaseUrl: "https://crawl.example.com", crawl4aiApiToken: "$CRAWL4AI_TEST_TOKEN" });
 	assert.equal(child.status, 0, child.stderr);
 	const output = JSON.parse(child.stdout.trim());
 	assert.equal(output.authorization, "Bearer from-env-source");
@@ -139,7 +136,6 @@ test("fetch_content tries Firecrawl before Crawl4AI when both are configured", a
 });
 
 test("Crawl4AI extraction errors remain visible in fetch_content guidance", async () => {
-	const home = await configHome({ crawl4aiBaseUrl: "https://crawl.example.com" });
 	const child = runChild(`
 		let calls = [];
 		globalThis.fetch = async (url) => {
@@ -150,7 +146,7 @@ test("Crawl4AI extraction errors remain visible in fetch_content guidance", asyn
 		const { extractContent } = await import(${JSON.stringify(extractModuleUrl)});
 		const result = await extractContent("https://example.com/client-rendered", undefined, { lookup: ${PUBLIC_LOOKUP} });
 		console.log(JSON.stringify({ calls, error: result.error }));
-	`, { HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: home });
+	`, {}, { crawl4aiBaseUrl: "https://crawl.example.com" });
 	assert.equal(child.status, 0, child.stderr);
 	const output = JSON.parse(child.stdout.trim());
 	assert.match(output.error, /Crawl4AI fallback failed: Crawl4AI md error 502/);
@@ -207,7 +203,6 @@ test("Crawl4AI rejects private targets without invoking the configured instance"
 
 test("Crawl4AI API base allows configured loopback without global SSRF allow ranges", async () => {
 	for (const crawl4aiBaseUrl of ["http://localhost:11235", "http://127.0.0.1:11235"]) {
-		const home = await configHome({ crawl4aiBaseUrl });
 		const child = runChild(`
 			let calls = [];
 			globalThis.fetch = async (url) => {
@@ -217,7 +212,7 @@ test("Crawl4AI API base allows configured loopback without global SSRF allow ran
 			const { extractWithCrawl4ai } = await import(${JSON.stringify(crawl4aiModuleUrl)});
 			const result = await extractWithCrawl4ai("https://example.com/local", undefined, { lookup: ${PUBLIC_LOOKUP} });
 			console.log(JSON.stringify({ calls, result }));
-		`, { HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: home });
+		`, {}, { crawl4aiBaseUrl });
 		assert.equal(child.status, 0, child.stderr);
 		const output = JSON.parse(child.stdout.trim());
 		assert.deepEqual(output.calls, [`${crawl4aiBaseUrl}/md`]);
