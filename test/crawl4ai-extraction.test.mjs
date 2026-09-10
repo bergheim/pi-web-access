@@ -239,6 +239,30 @@ test("Crawl4AI validates configured base redirects and strips the token on publi
 	]);
 });
 
+test("Crawl4AI replays the POST body across 301 and 302 redirects and only sends the token to the configured origin", async () => {
+	const child = runChild(`
+		let calls = [];
+		globalThis.fetch = async (url, init) => {
+			calls.push({ url: String(url), method: init.method, body: init.body, auth: Object.fromEntries(new Headers(init.headers)).authorization ?? null });
+			if (calls.length === 1) return new Response("", { status: 302, headers: { location: "https://crawl.example.com/api/md" } });
+			if (calls.length === 2) return new Response("", { status: 301, headers: { location: "https://other.example.com/md" } });
+			return new Response(JSON.stringify({ success: true, markdown: "# Redirected" }), { status: 200 });
+		};
+		const { extractWithCrawl4ai } = await import(${JSON.stringify(crawl4aiModuleUrl)});
+		const result = await extractWithCrawl4ai("https://example.com/a", undefined, { lookup: ${PUBLIC_LOOKUP} });
+		console.log(JSON.stringify({ calls, title: result.title }));
+	`, { CRAWL4AI_BASE_URL: "https://crawl.example.com", CRAWL4AI_API_TOKEN: "c4a-secret" });
+	assert.equal(child.status, 0, child.stderr);
+	const output = JSON.parse(child.stdout.trim());
+	const body = JSON.stringify({ url: "https://example.com/a", f: "fit" });
+	assert.deepEqual(output.calls, [
+		{ url: "https://crawl.example.com/md", method: "POST", body, auth: "Bearer c4a-secret" },
+		{ url: "https://crawl.example.com/api/md", method: "POST", body, auth: "Bearer c4a-secret" },
+		{ url: "https://other.example.com/md", method: "POST", body, auth: null },
+	]);
+	assert.equal(output.title, "Redirected");
+});
+
 test("Crawl4AI blocks configured base redirects to private targets", async () => {
 	const child = runChild(`
 		let calls = [];

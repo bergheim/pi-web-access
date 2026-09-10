@@ -140,17 +140,20 @@ export async function extractWithCrawl4ai(
 	const headers: Record<string, string> = { "Content-Type": "application/json" };
 	if (token) headers.Authorization = `Bearer ${token}`;
 	const requestUrl = new URL(`${baseUrl}/md`);
+	const init = {
+		method: "POST",
+		headers,
+		body: JSON.stringify({ url, f: MARKDOWN_FILTER }),
+		signal: requestSignal(options?.timeoutMs ?? EXTRACT_TIMEOUT_MS, signal),
+	};
 	const activityId = activityMonitor.logStart({ type: "fetch", url: requestUrl.toString() });
 	try {
-		const response = await fetchRemoteUrl(requestUrl, {
-			method: "POST",
-			headers,
-			body: JSON.stringify({ url, f: MARKDOWN_FILTER }),
-			signal: requestSignal(options?.timeoutMs ?? EXTRACT_TIMEOUT_MS, signal),
-		}, {
+		const response = await fetchRemoteUrl(requestUrl, init, {
 			...ssrf,
 			allowLoopback: isLoopbackApiUrl(requestUrl),
-			onRedirect: ({ from, to, init }) => to.origin === from.origin ? init : { ...init, headers: { "Content-Type": "application/json" } },
+			// Replay the full POST on every hop: fetchRemoteUrl would turn a 301/302/303 into a bodyless GET,
+			// which /md cannot serve. The bearer token only ever goes to the configured origin.
+			onRedirect: ({ to }) => to.origin === requestUrl.origin ? init : { ...init, headers: { "Content-Type": "application/json" } },
 		});
 		if (!response.ok) {
 			const text = await response.text().catch(() => "");
