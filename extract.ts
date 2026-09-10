@@ -134,6 +134,10 @@ function isAbortError(err: unknown): boolean {
 	return errorMessage(err).toLowerCase().includes("abort");
 }
 
+function isAbortException(err: unknown): boolean {
+	return err instanceof DOMException && (err.name === "AbortError" || err.name === "TimeoutError");
+}
+
 function isRedirectPolicyError(message: string): boolean {
 	return message.startsWith("Authenticated fetch refused cross-origin redirect") ||
 		message.startsWith("Blocked internal ") ||
@@ -851,7 +855,7 @@ export async function extractContent(
 					if (crawl4aiResult) return withDeclaredLinks(crawl4aiResult);
 				}
 			} catch (err) {
-				if (isAbortError(err)) return abortedResult(url);
+				if (signal?.aborted || isAbortException(err)) return abortedResult(url);
 				crawl4aiError = errorMessage(err);
 				if (isConfigParseError(err)) return parseErrorResult(crawl4aiError);
 			}

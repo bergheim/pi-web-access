@@ -102,8 +102,8 @@ function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
-function isAbortError(err: unknown): boolean {
-	return errorMessage(err).toLowerCase().includes("abort");
+function isAbortException(err: unknown): boolean {
+	return err instanceof DOMException && (err.name === "AbortError" || err.name === "TimeoutError");
 }
 
 function ssrfOptions(options?: Crawl4aiExtractOptions): SsrfConfig & { lookup?: Lookup } {
@@ -167,7 +167,7 @@ export async function extractWithCrawl4ai(
 		});
 		if (!response.ok) {
 			const text = await response.text().catch(() => "");
-			throw new Error(`Crawl4AI md error ${response.status}: ${redactCredential(text.slice(0, 300), token)}`);
+			throw new Error(`Crawl4AI md error ${response.status}: ${redactCredential(text, token).slice(0, 300)}`);
 		}
 		let data: unknown;
 		try {
@@ -196,7 +196,7 @@ export async function extractWithCrawl4ai(
 		if (!content) return null;
 		return { url, title: firstHeadingTitle(content), content, error: null };
 	} catch (err) {
-		if (isAbortError(err)) activityMonitor.logComplete(activityId, 0);
+		if (signal?.aborted || isAbortException(err)) activityMonitor.logComplete(activityId, 0);
 		else activityMonitor.logError(activityId, errorMessage(err));
 		throw err;
 	}

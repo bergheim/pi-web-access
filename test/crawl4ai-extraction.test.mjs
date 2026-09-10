@@ -154,6 +154,25 @@ test("Crawl4AI extraction errors remain visible in fetch_content guidance", asyn
 	assert.match(output.error, /Set crawl4aiBaseUrl in/);
 });
 
+test("Crawl4AI unsuccessful envelopes mentioning abort remain visible in fetch_content guidance", async () => {
+	const child = runChild(`
+		let calls = [];
+		globalThis.fetch = async (url) => {
+			calls.push(String(url));
+			if (calls.length === 1) return new Response("blocked", { status: 403 });
+			return new Response(JSON.stringify({ success: false, error: "browser navigation aborted unexpectedly" }), { status: 200 });
+		};
+		const { extractContent } = await import(${JSON.stringify(extractModuleUrl)});
+		const result = await extractContent("https://example.com/client-rendered", undefined, { lookup: ${PUBLIC_LOOKUP} });
+		console.log(JSON.stringify({ calls, error: result.error }));
+	`, { CRAWL4AI_BASE_URL: "https://crawl.example.com" });
+	assert.equal(child.status, 0, child.stderr);
+	const output = JSON.parse(child.stdout.trim());
+	assert.deepEqual(output.calls, ["https://example.com/client-rendered", "https://crawl.example.com/md"]);
+	assert.match(output.error, /Crawl4AI fallback failed: Crawl4AI md unsuccessful: browser navigation aborted unexpectedly/);
+	assert.notEqual(output.error, "Aborted");
+});
+
 test("Crawl4AI malformed and unsuccessful envelopes throw visible errors", async () => {
 	const child = runChild(`
 		const responses = [
@@ -199,6 +218,24 @@ test("Crawl4AI never leaks the configured token through a JSON parse failure", a
 	assert.equal(output.thrown, "Crawl4AI md returned invalid JSON");
 	assert.doesNotMatch(output.thrown, /c4a-secret/);
 	assert.doesNotMatch(output.logged, /c4a-secret/);
+});
+
+test("Crawl4AI redacts a token that crosses the HTTP error excerpt boundary", async () => {
+	const child = runChild(`
+		globalThis.fetch = async () => new Response("x".repeat(295) + "boundary-secret-token" + "tail", { status: 502 });
+		const { extractWithCrawl4ai } = await import(${JSON.stringify(crawl4aiModuleUrl)});
+		const { activityMonitor } = await import(${JSON.stringify(activityModuleUrl)});
+		let thrown = null;
+		try { await extractWithCrawl4ai("https://example.com/a", undefined, { lookup: ${PUBLIC_LOOKUP} }); }
+		catch (err) { thrown = err.message; }
+		const logged = JSON.stringify(activityMonitor.getEntries());
+		console.log(JSON.stringify({ thrown, logged }));
+	`, { CRAWL4AI_BASE_URL: "https://crawl.example.com", CRAWL4AI_API_TOKEN: "boundary-secret-token" });
+	assert.equal(child.status, 0, child.stderr);
+	const output = JSON.parse(child.stdout.trim());
+	assert.match(output.thrown, /^Crawl4AI md error 502: /);
+	assert.doesNotMatch(output.thrown, /bound/);
+	assert.doesNotMatch(output.logged, /bound/);
 });
 
 test("Crawl4AI rejects private targets without invoking the configured instance", async () => {
