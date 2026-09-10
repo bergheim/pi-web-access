@@ -263,6 +263,51 @@ test("Crawl4AI replays the POST body across 301 and 302 redirects and only sends
 	assert.equal(output.title, "Redirected");
 });
 
+test("Crawl4AI keeps the loopback exemption on the configured origin and blocks a pivot to another loopback service", async () => {
+	const child = runChild(`
+		let calls = [];
+		globalThis.fetch = async (url, init) => {
+			calls.push({ url: String(url), method: init.method, body: init.body });
+			if (calls.length === 1) return new Response("", { status: 302, headers: { location: "http://127.0.0.1:11235/api/md" } });
+			if (calls.length === 2) return new Response("", { status: 302, headers: { location: "http://127.0.0.2:9999/private" } });
+			return new Response(JSON.stringify({ success: true, markdown: "# Pivoted" }), { status: 200 });
+		};
+		const { extractWithCrawl4ai } = await import(${JSON.stringify(crawl4aiModuleUrl)});
+		let pivotError = null;
+		try { await extractWithCrawl4ai("https://example.com/a", undefined, { lookup: ${PUBLIC_LOOKUP} }); }
+		catch (err) { pivotError = err.message; }
+		console.log(JSON.stringify({ calls, pivotError }));
+	`, {}, { crawl4aiBaseUrl: "http://127.0.0.1:11235" });
+	assert.equal(child.status, 0, child.stderr);
+	const output = JSON.parse(child.stdout.trim());
+	const body = JSON.stringify({ url: "https://example.com/a", f: "fit" });
+	// The same-origin hop is still allowed and still replays the POST; the cross-origin loopback hop is never fetched.
+	assert.deepEqual(output.calls, [
+		{ url: "http://127.0.0.1:11235/md", method: "POST", body },
+		{ url: "http://127.0.0.1:11235/api/md", method: "POST", body },
+	]);
+	assert.match(output.pivotError, /Blocked internal address/);
+});
+
+test("Crawl4AI blocks a loopback base redirecting to localhost", async () => {
+	const child = runChild(`
+		let calls = [];
+		globalThis.fetch = async (url) => {
+			calls.push(String(url));
+			return new Response("", { status: 302, headers: { location: "http://localhost:11235/md" } });
+		};
+		const { extractWithCrawl4ai } = await import(${JSON.stringify(crawl4aiModuleUrl)});
+		let redirectError = null;
+		try { await extractWithCrawl4ai("https://example.com/a", undefined, { lookup: ${PUBLIC_LOOKUP} }); }
+		catch (err) { redirectError = err.message; }
+		console.log(JSON.stringify({ calls, redirectError }));
+	`, {}, { crawl4aiBaseUrl: "http://127.0.0.1:11235" });
+	assert.equal(child.status, 0, child.stderr);
+	const output = JSON.parse(child.stdout.trim());
+	assert.deepEqual(output.calls, ["http://127.0.0.1:11235/md"]);
+	assert.match(output.redirectError, /Blocked internal hostname/);
+});
+
 test("Crawl4AI blocks configured base redirects to private targets", async () => {
 	const child = runChild(`
 		let calls = [];
