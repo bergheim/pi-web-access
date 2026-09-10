@@ -276,26 +276,35 @@ test("Crawl4AI API base allows configured loopback without global SSRF allow ran
 	}
 });
 
-test("Crawl4AI validates configured base redirects and strips the token on public cross-origin redirects", async () => {
+test("Crawl4AI rejects every cross-origin redirect before fetching the redirected origin", async () => {
 	const child = runChild(`
-		let calls = [];
-		globalThis.fetch = async (url, init) => {
-			calls.push({ url: String(url), auth: Object.fromEntries(new Headers(init.headers)).authorization ?? null });
-			if (calls.length === 1) return new Response("", { status: 307, headers: { location: "https://other.example.com/md" } });
-			return new Response(JSON.stringify({ success: true, markdown: "# Redirected" }), { status: 200 });
-		};
 		const { extractWithCrawl4ai } = await import(${JSON.stringify(crawl4aiModuleUrl)});
-		await extractWithCrawl4ai("https://example.com/a", undefined, { lookup: ${PUBLIC_LOOKUP} });
-		console.log(JSON.stringify({ calls }));
+		const results = [];
+		for (const status of [301, 302, 303, 307, 308]) {
+			const calls = [];
+			globalThis.fetch = async (url, init) => {
+				calls.push({ url: String(url), method: init.method, body: init.body, auth: Object.fromEntries(new Headers(init.headers)).authorization ?? null });
+				if (calls.length === 1) return new Response("", { status, headers: { location: "https://other.example.com/md" } });
+				return new Response(JSON.stringify({ success: true, markdown: "# Redirected" }), { status: 200 });
+			};
+			let error = null;
+			try { await extractWithCrawl4ai("https://example.com/a", undefined, { lookup: ${PUBLIC_LOOKUP} }); }
+			catch (err) { error = err.message; }
+			results.push({ status, calls, error });
+		}
+		console.log(JSON.stringify({ results }));
 	`, { CRAWL4AI_BASE_URL: "https://crawl.example.com", CRAWL4AI_API_TOKEN: "c4a-secret" });
 	assert.equal(child.status, 0, child.stderr);
-	assert.deepEqual(JSON.parse(child.stdout.trim()).calls, [
-		{ url: "https://crawl.example.com/md", auth: "Bearer c4a-secret" },
-		{ url: "https://other.example.com/md", auth: null },
-	]);
+	const body = JSON.stringify({ url: "https://example.com/a", f: "fit" });
+	for (const result of JSON.parse(child.stdout.trim()).results) {
+		assert.deepEqual(result.calls, [
+			{ url: "https://crawl.example.com/md", method: "POST", body, auth: "Bearer c4a-secret" },
+		]);
+		assert.match(result.error, /Crawl4AI refused cross-origin redirect to https:\/\/other\.example\.com/);
+	}
 });
 
-test("Crawl4AI replays the POST body across 301 and 302 redirects and only sends the token to the configured origin", async () => {
+test("Crawl4AI replays same-origin 301 and 302 POSTs but rejects a later cross-origin redirect", async () => {
 	const child = runChild(`
 		let calls = [];
 		globalThis.fetch = async (url, init) => {
@@ -305,8 +314,10 @@ test("Crawl4AI replays the POST body across 301 and 302 redirects and only sends
 			return new Response(JSON.stringify({ success: true, markdown: "# Redirected" }), { status: 200 });
 		};
 		const { extractWithCrawl4ai } = await import(${JSON.stringify(crawl4aiModuleUrl)});
-		const result = await extractWithCrawl4ai("https://example.com/a", undefined, { lookup: ${PUBLIC_LOOKUP} });
-		console.log(JSON.stringify({ calls, title: result.title }));
+		let error = null;
+		try { await extractWithCrawl4ai("https://example.com/a", undefined, { lookup: ${PUBLIC_LOOKUP} }); }
+		catch (err) { error = err.message; }
+		console.log(JSON.stringify({ calls, error }));
 	`, { CRAWL4AI_BASE_URL: "https://crawl.example.com", CRAWL4AI_API_TOKEN: "c4a-secret" });
 	assert.equal(child.status, 0, child.stderr);
 	const output = JSON.parse(child.stdout.trim());
@@ -314,9 +325,8 @@ test("Crawl4AI replays the POST body across 301 and 302 redirects and only sends
 	assert.deepEqual(output.calls, [
 		{ url: "https://crawl.example.com/md", method: "POST", body, auth: "Bearer c4a-secret" },
 		{ url: "https://crawl.example.com/api/md", method: "POST", body, auth: "Bearer c4a-secret" },
-		{ url: "https://other.example.com/md", method: "POST", body, auth: null },
 	]);
-	assert.equal(output.title, "Redirected");
+	assert.match(output.error, /Crawl4AI refused cross-origin redirect to https:\/\/other\.example\.com/);
 });
 
 test("Crawl4AI follows a 303 as a bodyless GET and keeps the POST on 307", async () => {

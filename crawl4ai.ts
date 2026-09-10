@@ -153,6 +153,9 @@ export async function extractWithCrawl4ai(
 			...ssrf,
 			allowLoopback: isLoopbackApiUrl(requestUrl),
 			onRedirect: ({ to, init: redirectInit, response }) => {
+				if (to.origin !== requestUrl.origin) {
+					throw new Error(`Crawl4AI refused cross-origin redirect to ${to.origin}`);
+				}
 				// 303 genuinely means "GET the other resource", and it is final: once a hop has turned the
 				// chain into a GET, no later hop may resurrect the extraction body.
 				if (response.status === 303) seeOther = true;
@@ -160,9 +163,7 @@ export async function extractWithCrawl4ai(
 				// fetchRemoteUrl turns those into a bodyless GET that /md cannot serve, so replay the POST.
 				// 307/308 already keep the method, so their init needs no help.
 				const replayPost = !seeOther && (response.status === 301 || response.status === 302);
-				const nextInit = replayPost ? init : redirectInit;
-				// The bearer token only ever goes to the configured origin.
-				return to.origin === requestUrl.origin ? nextInit : { ...nextInit, headers: { "Content-Type": "application/json" } };
+				return replayPost ? init : redirectInit;
 			},
 		});
 		if (!response.ok) {
