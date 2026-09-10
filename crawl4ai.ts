@@ -172,8 +172,10 @@ export async function extractWithCrawl4ai(
 		let data: unknown;
 		try {
 			data = await response.json();
-		} catch (err) {
-			throw new Error(`Crawl4AI md returned invalid JSON: ${errorMessage(err)}`);
+		} catch {
+			// The parser message quotes the offending body, which can echo the configured token, so it never
+			// reaches the thrown error or the activity log.
+			throw new Error("Crawl4AI md returned invalid JSON");
 		}
 		if (!data || typeof data !== "object" || Array.isArray(data)) {
 			throw new Error("Crawl4AI md returned an unexpected response shape");

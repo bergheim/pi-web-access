@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 const crawl4aiModuleUrl = new URL("../crawl4ai.ts", import.meta.url).href;
 const extractModuleUrl = new URL("../extract.ts", import.meta.url).href;
+const activityModuleUrl = new URL("../activity.ts", import.meta.url).href;
 
 // Each child gets its own empty config home so a developer's real web-search.json never leaks into a test.
 function runChild(script, env = {}, config = null) {
@@ -180,6 +181,24 @@ test("Crawl4AI malformed and unsuccessful envelopes throw visible errors", async
 		"Crawl4AI md unsuccessful: browser crashed",
 		"Crawl4AI md unsuccessful: Authentication required",
 	]);
+});
+
+test("Crawl4AI never leaks the configured token through a JSON parse failure", async () => {
+	const child = runChild(`
+		globalThis.fetch = async () => new Response("c4a-secret", { status: 200 });
+		const { extractWithCrawl4ai } = await import(${JSON.stringify(crawl4aiModuleUrl)});
+		const { activityMonitor } = await import(${JSON.stringify(activityModuleUrl)});
+		let thrown = null;
+		try { await extractWithCrawl4ai("https://example.com/a", undefined, { lookup: ${PUBLIC_LOOKUP} }); }
+		catch (err) { thrown = err.message; }
+		const logged = JSON.stringify(activityMonitor.getEntries());
+		console.log(JSON.stringify({ thrown, logged }));
+	`, { CRAWL4AI_BASE_URL: "https://crawl.example.com", CRAWL4AI_API_TOKEN: "c4a-secret" });
+	assert.equal(child.status, 0, child.stderr);
+	const output = JSON.parse(child.stdout.trim());
+	assert.equal(output.thrown, "Crawl4AI md returned invalid JSON");
+	assert.doesNotMatch(output.thrown, /c4a-secret/);
+	assert.doesNotMatch(output.logged, /c4a-secret/);
 });
 
 test("Crawl4AI rejects private targets without invoking the configured instance", async () => {
