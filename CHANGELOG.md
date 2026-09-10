@@ -4,24 +4,34 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-09-10
+
+### Highlights
+
+- Search Google through SerpApi with domain and recency filters.
+- Use a self-hosted Crawl4AI instance as an extraction fallback.
+- Connect through SOCKS proxies and resolve credentials with 1Password service accounts.
+- Start Pi faster through on-demand loading of extraction and AI features.
+- Get more reliable provider fallback, credential routing, caching, and config discovery.
+
 ### Added
 
-- Added a Curator action to approve the current summary and use auto-summary for later default-workflow searches in the same prompt run without persisting the choice. Thanks to [@thomak-dev](https://github.com/thomak-dev) for issue #376.
-- Added a self-hosted Crawl4AI extraction fallback for `fetch_content`, configured with `crawl4aiBaseUrl` / `CRAWL4AI_BASE_URL` and `crawl4aiApiToken` / `CRAWL4AI_API_TOKEN`. It calls `POST /md` with the `fit` filter, runs after Firecrawl and before hosted providers, and `crawl4ai` is accepted in `fetchRouting.providers`. Thanks to [@bergheim](https://github.com/bergheim) for [PR #375](https://github.com/nicobailon/pi-web-access/pull/375).
-- Added an explicit-only SerpApi Google Search provider with `serpapiApiKey` / `SERPAPI_KEY`, domain filtering, recency filtering, routing, and Curator support. Thanks to [@tanysheng](https://github.com/tanysheng) for PR #363.
-- Added SOCKS4, SOCKS4A, SOCKS5, and SOCKS5H proxy support through config and per-call overrides. Thanks to [@phillipzink](https://github.com/phillipzink) for PR #365.
-- Added 1Password service-account support for credential resolver commands by forwarding `OP_SERVICE_ACCOUNT_TOKEN`. Thanks to PR author [@Avg8888](https://github.com/Avg8888) and commit author [@xapids](https://github.com/xapids) for [PR #364](https://github.com/nicobailon/pi-web-access/pull/364).
+- Added a Curator action that approves the current summary and uses auto-summary for later default-workflow searches in the same prompt run. The choice is not saved between prompts. Thanks to [@thomak-dev](https://github.com/thomak-dev) for issue #376.
+- Added a self-hosted Crawl4AI extraction fallback for `fetch_content`, configured with `crawl4aiBaseUrl` / `CRAWL4AI_BASE_URL` and `crawl4aiApiToken` / `CRAWL4AI_API_TOKEN`. It runs after Firecrawl and before hosted providers, and can be selected with `crawl4ai` in `fetchRouting.providers`. Thanks to [@bergheim](https://github.com/bergheim) for [PR #375](https://github.com/nicobailon/pi-web-access/pull/375).
+- Added an explicit SerpApi Google Search provider with `serpapiApiKey` / `SERPAPI_KEY`, domain and recency filters, search routing, and Curator support. Thanks to [@tanysheng](https://github.com/tanysheng) for PR #363.
+- Added SOCKS4, SOCKS4A, SOCKS5, and SOCKS5H proxy support in config and per-call overrides. Thanks to [@phillipzink](https://github.com/phillipzink) for PR #365.
+- Added 1Password service-account support for credential resolver commands through `OP_SERVICE_ACCOUNT_TOKEN`. Thanks to PR author [@Avg8888](https://github.com/Avg8888) and commit author [@xapids](https://github.com/xapids) for [PR #364](https://github.com/nicobailon/pi-web-access/pull/364).
 
 ### Changed
 
-- Load extraction and AI helpers on first use to reduce extension startup work. Thanks to [@ducaoya](https://github.com/ducaoya) for PR #366.
+- Load extraction and AI features only when first used, reducing extension startup time. Thanks to [@ducaoya](https://github.com/ducaoya) for PR #366.
 
 ### Fixed
 
-- Classified Tavily HTTP 432 monthly plan exhaustion as quota so configured search routing can fall back. Thanks to [@simbel](https://github.com/simbel) for issue #378.
-- Refuse to send Pi-resolved OpenAI credentials to the default official Responses endpoint when their effective provider `baseUrl` is custom; configure `openaiResponsesUrl` explicitly for gateway search. Thanks to [@projectkite](https://github.com/projectkite) for issue #367.
-- Fixed expired fetched-content payloads remaining in memory after cache pruning, preserving the retrieval window and session history. Thanks to [@MDGChamomile](https://github.com/MDGChamomile) for issue #362.
-- Fixed no-environment web-search config lookup to use Pi's agent directory (`~/.pi/agent/web-search.json`) without implicitly falling back to the legacy `~/.pi/web-search.json`. Existing `PI_CODING_AGENT_DIR` and XDG compatibility behavior remain unchanged. Thanks to [@lJoublanc](https://github.com/lJoublanc) for issue #360.
+- Treat Tavily monthly plan exhaustion as a quota error so search routing can fall back to another provider. Thanks to [@simbel](https://github.com/simbel) for issue #378.
+- Refuse to send Pi-resolved OpenAI credentials to the official Responses endpoint when they belong to a provider with a custom `baseUrl`. Configure `openaiResponsesUrl` explicitly to search through a gateway. Thanks to [@projectkite](https://github.com/projectkite) for issue #367.
+- Remove expired fetched content from memory when pruning the cache, while preserving the retrieval window and session history. Thanks to [@MDGChamomile](https://github.com/MDGChamomile) for issue #362.
+- Use Pi's agent directory (`~/.pi/agent/web-search.json`) for the default web-search config instead of falling back to the legacy `~/.pi/web-search.json`. Existing `PI_CODING_AGENT_DIR` and XDG behavior is unchanged. Thanks to [@lJoublanc](https://github.com/lJoublanc) for issue #360.
 
 ## [0.28.0] - 2026-09-04
 
