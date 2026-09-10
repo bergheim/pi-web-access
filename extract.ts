@@ -1,8 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { Readability } from "@mozilla/readability";
-import { resizeImage } from "@earendil-works/pi-coding-agent";
-import { parseHTML } from "linkedom";
-import TurndownService from "turndown";
+import type TurndownService from "turndown";
 import pLimit from "p-limit";
 import { activityMonitor } from "./activity.ts";
 import { extractRSCContent } from "./rsc-extract.ts";
@@ -83,6 +80,7 @@ function isDefuddleConsoleError(args: Parameters<typeof console.error>): boolean
 
 async function extractWithDefuddle(text: string, url: string): Promise<{ title: string; content: string } | null> {
 	const { Defuddle } = await import("defuddle/node");
+	const { parseHTML } = await import("linkedom");
 	const { document } = parseHTML(text);
 	Object.defineProperty(document, "location", {
 		value: new URL(url),
@@ -288,10 +286,19 @@ function abortedResult(url: string): ExtractedContent {
 	return { url, title: "", content: "", error: "Aborted" };
 }
 
-const turndown = new TurndownService({
-	headingStyle: "atx",
-	codeBlockStyle: "fenced",
-});
+// Share first-use initialization without loading Turndown at extension startup.
+let turndownInstance: Promise<TurndownService> | undefined;
+async function loadTurndown(): Promise<TurndownService> {
+	const { default: TurndownService } = await import("turndown");
+	return new TurndownService({
+		headingStyle: "atx",
+		codeBlockStyle: "fenced",
+	});
+}
+function getTurndown(): Promise<TurndownService> {
+	turndownInstance ??= loadTurndown();
+	return turndownInstance;
+}
 
 const fetchLimit = pLimit(CONCURRENT_LIMIT);
 
@@ -1118,6 +1125,7 @@ async function extractViaHttp(
 	const activityId = activityMonitor.logStart({ type: "fetch", url });
 
 	const controller = new AbortController();
+	const startedAt = Date.now();
 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
 	const onAbort = () => controller.abort();
@@ -1210,6 +1218,7 @@ async function extractViaHttp(
 			}
 			try {
 				const buffer = await readResponseBufferWithLimit(response, maxResponseSize, () => responseSizeLimitError(maxResponseSize));
+				const { resizeImage } = await import("@earendil-works/pi-coding-agent");
 				const resized = await resizeImage(new Uint8Array(buffer), mimeType, { maxWidth: 2000, maxHeight: 2000 });
 				activityMonitor.logComplete(activityId, response.status);
 				if (!resized) return { url, title: "", content: "", error: `Could not decode image: ${mimeType}`, mimeType, status: response.status };
@@ -1278,6 +1287,7 @@ async function extractViaHttp(
 			return { url, title, content: text, error: null };
 		}
 
+		const { parseHTML } = await import("linkedom");
 		const { document } = parseHTML(text);
 		const documentTitle = document.title?.trim() ?? "";
 		const declaredLinks = discoverDeclaredWebLinks(
@@ -1285,6 +1295,7 @@ async function extractViaHttp(
 			response.headers.get("link"),
 			response.url || url,
 		);
+		const { Readability } = await import("@mozilla/readability");
 		const reader = new Readability(document as unknown as Document);
 		const article = reader.parse();
 
@@ -1332,7 +1343,7 @@ async function extractViaHttp(
 		if (typeof article.content !== "string") {
 			throw new Error("Readability returned invalid article content");
 		}
-		const markdown = turndown.turndown(article.content);
+		const markdown = (await getTurndown()).turndown(article.content);
 		activityMonitor.logComplete(activityId, response.status);
 
 		if (markdown.length < MIN_USEFUL_CONTENT) {
@@ -1387,6 +1398,13 @@ async function extractViaHttp(
 	} finally {
 		clearTimeout(timeoutId);
 		signal?.removeEventListener("abort", onAbort);
+		// Imports and CPU-bound processing need not observe the fetch signal, and
+		// can finish before an expired timer gets a turn. Guard every exit, with
+		// caller cancellation taking precedence over the internal deadline.
+		if (signal?.aborted) return abortedResult(url);
+		if (controller.signal.aborted || Date.now() - startedAt >= timeoutMs) {
+			return { url, title: "", content: "", error: "The operation was aborted." };
+		}
 	}
 }
 
