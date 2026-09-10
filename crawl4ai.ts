@@ -151,9 +151,14 @@ export async function extractWithCrawl4ai(
 		const response = await fetchRemoteUrl(requestUrl, init, {
 			...ssrf,
 			allowLoopback: isLoopbackApiUrl(requestUrl),
-			// Replay the full POST on every hop: fetchRemoteUrl would turn a 301/302/303 into a bodyless GET,
-			// which /md cannot serve. The bearer token only ever goes to the configured origin.
-			onRedirect: ({ to }) => to.origin === requestUrl.origin ? init : { ...init, headers: { "Content-Type": "application/json" } },
+			onRedirect: ({ to, init: redirectInit, response }) => {
+				// 301/302 are the hops a reverse proxy in front of a self-hosted instance actually emits, and
+				// fetchRemoteUrl turns those into a bodyless GET that /md cannot serve, so replay the POST.
+				// 303 genuinely means "GET the other resource", and 307/308 already keep the method.
+				const nextInit = response.status === 301 || response.status === 302 ? init : redirectInit;
+				// The bearer token only ever goes to the configured origin.
+				return to.origin === requestUrl.origin ? nextInit : { ...nextInit, headers: { "Content-Type": "application/json" } };
+			},
 		});
 		if (!response.ok) {
 			const text = await response.text().catch(() => "");

@@ -263,6 +263,28 @@ test("Crawl4AI replays the POST body across 301 and 302 redirects and only sends
 	assert.equal(output.title, "Redirected");
 });
 
+test("Crawl4AI follows a 303 as a bodyless GET and keeps the POST on 307", async () => {
+	const child = runChild(`
+		const run = async (status) => {
+			let calls = [];
+			globalThis.fetch = async (url, init) => {
+				calls.push({ url: String(url), method: init.method, hasBody: Boolean(init.body) });
+				if (calls.length === 1) return new Response("", { status, headers: { location: "https://crawl.example.com/elsewhere" } });
+				return new Response(JSON.stringify({ success: true, markdown: "# Followed" }), { status: 200 });
+			};
+			const { extractWithCrawl4ai, clearCrawl4aiConfigCache } = await import(${JSON.stringify(crawl4aiModuleUrl)});
+			clearCrawl4aiConfigCache();
+			await extractWithCrawl4ai("https://example.com/a", undefined, { lookup: ${PUBLIC_LOOKUP} });
+			return calls[1];
+		};
+		console.log(JSON.stringify({ seeOther: await run(303), temporary: await run(307) }));
+	`, { CRAWL4AI_BASE_URL: "https://crawl.example.com" });
+	assert.equal(child.status, 0, child.stderr);
+	const output = JSON.parse(child.stdout.trim());
+	assert.deepEqual(output.seeOther, { url: "https://crawl.example.com/elsewhere", method: "GET", hasBody: false });
+	assert.deepEqual(output.temporary, { url: "https://crawl.example.com/elsewhere", method: "POST", hasBody: true });
+});
+
 test("Crawl4AI keeps the loopback exemption on the configured origin and blocks a pivot to another loopback service", async () => {
 	const child = runChild(`
 		let calls = [];
