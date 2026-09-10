@@ -17,6 +17,7 @@ import { extractWithQuerit, isQueritAvailable } from "./querit.ts";
 import { extractWithKagi, isKagiExtractAvailable } from "./kagi.ts";
 import { extractWithOllama, isOllamaFetchAvailable } from "./ollama.ts";
 import { extractWithFirecrawl, isFirecrawlAvailable } from "./firecrawl.ts";
+import { extractWithCrawl4ai, isCrawl4aiAvailable } from "./crawl4ai.ts";
 import { extractWithBrightDataUnlocker, isBrightDataUnlockerAvailable } from "./brightdata-unlocker.ts";
 import { isVideoFile, extractVideo, extractVideoFrame, getLocalVideoDuration } from "./video-extract.ts";
 import { appendDeclaredWebLinks, discoverDeclaredWebLinks, type DeclaredWebLink } from "./declared-web-links.ts";
@@ -67,10 +68,10 @@ function loadFetchTimeoutMs(): number {
 const NON_RECOVERABLE_ERRORS = ["Unsupported content type", "Response too large", "PDF extraction is disabled", "Image fetching is disabled"];
 const MIN_USEFUL_CONTENT = 500;
 const SUPPORTED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-const FETCH_PROVIDERS = ["http", "firecrawl", "jina", "tinyfish", "search1api", "querit", "kagi", "ollama", "parallel", "parallel-mcp", "brightdata", "gemini"] as const;
+const FETCH_PROVIDERS = ["http", "firecrawl", "crawl4ai", "jina", "tinyfish", "search1api", "querit", "kagi", "ollama", "parallel", "parallel-mcp", "brightdata", "gemini"] as const;
 type FetchProvider = typeof FETCH_PROVIDERS[number];
 type FetchRouting = { providers: FetchProvider[]; allowRemoteHostedProviders: boolean };
-const DEFAULT_FETCH_PROVIDER_ORDER: FetchProvider[] = ["http", "firecrawl", "jina", "tinyfish", "search1api", "querit", "kagi", "ollama", "parallel", "brightdata", "gemini"];
+const DEFAULT_FETCH_PROVIDER_ORDER: FetchProvider[] = ["http", "firecrawl", "crawl4ai", "jina", "tinyfish", "search1api", "querit", "kagi", "ollama", "parallel", "brightdata", "gemini"];
 const REMOTE_HOSTED_FETCH_PROVIDERS = new Set<FetchProvider>(["jina", "tinyfish", "search1api", "querit", "kagi", "ollama", "parallel", "parallel-mcp", "brightdata", "gemini"]);
 
 function isDefuddleConsoleError(args: Parameters<typeof console.error>): boolean {
@@ -131,6 +132,10 @@ function isConfigParseError(err: unknown): boolean {
 
 function isAbortError(err: unknown): boolean {
 	return errorMessage(err).toLowerCase().includes("abort");
+}
+
+function isAbortException(err: unknown): boolean {
+	return err instanceof DOMException && (err.name === "AbortError" || err.name === "TimeoutError");
 }
 
 function isRedirectPolicyError(message: string): boolean {
@@ -795,6 +800,7 @@ export async function extractContent(
 	};
 
 	let firecrawlError: string | null = null;
+	let crawl4aiError: string | null = null;
 	let tinyfishError: string | null = null;
 	let search1apiError: string | null = null;
 	let queritError: string | null = null;
@@ -833,6 +839,25 @@ export async function extractContent(
 				if (isAbortError(err)) return abortedResult(url);
 				firecrawlError = errorMessage(err);
 				if (isConfigParseError(err)) return parseErrorResult(firecrawlError);
+			}
+			continue;
+		}
+
+		if (provider === "crawl4ai") {
+			try {
+				if (isCrawl4aiAvailable()) {
+					const ssrf = loadSsrfConfig();
+					const crawl4aiResult = await extractWithCrawl4ai(url, signal, {
+						timeoutMs: options?.timeoutMs,
+						...(options?.lookup ? { lookup: options.lookup } : {}),
+						ssrf,
+					});
+					if (crawl4aiResult) return withDeclaredLinks(crawl4aiResult);
+				}
+			} catch (err) {
+				if (signal?.aborted || isAbortException(err)) return abortedResult(url);
+				crawl4aiError = errorMessage(err);
+				if (isConfigParseError(err)) return parseErrorResult(crawl4aiError);
 			}
 			continue;
 		}
@@ -998,6 +1023,7 @@ export async function extractContent(
 	const guidance = [
 		finalHttpResult?.error ?? "No fetch_content provider returned content",
 		...(firecrawlError ? [`Firecrawl fallback failed: ${firecrawlError}`] : []),
+		...(crawl4aiError ? [`Crawl4AI fallback failed: ${crawl4aiError}`] : []),
 		...(tinyfishError ? [`TinyFish fallback failed: ${tinyfishError}`] : []),
 		...(search1apiError ? [`Search1API fallback failed: ${search1apiError}`] : []),
 		...(queritError ? [`Querit fallback failed: ${queritError}`] : []),
@@ -1009,6 +1035,7 @@ export async function extractContent(
 		"",
 		"Fallback options:",
 		`  • Set firecrawlBaseUrl in ${WEB_SEARCH_CONFIG_PATH} to a self-hosted Firecrawl instance`,
+		`  • Set crawl4aiBaseUrl in ${WEB_SEARCH_CONFIG_PATH} to a self-hosted Crawl4AI instance`,
 		`  • Set tinyfishApiKey in ${WEB_SEARCH_CONFIG_PATH} or TINYFISH_API_KEY`,
 		`  • Set search1apiApiKey in ${WEB_SEARCH_CONFIG_PATH} or SEARCH1API_KEY`,
 		`  • Set queritApiKey in ${WEB_SEARCH_CONFIG_PATH} or QUERIT_API_KEY`,
