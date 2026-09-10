@@ -285,6 +285,27 @@ test("Crawl4AI follows a 303 as a bodyless GET and keeps the POST on 307", async
 	assert.deepEqual(output.temporary, { url: "https://crawl.example.com/elsewhere", method: "POST", hasBody: true });
 });
 
+test("Crawl4AI does not resurrect the POST when a 303 is followed by a 301", async () => {
+	const child = runChild(`
+		let calls = [];
+		globalThis.fetch = async (url, init) => {
+			calls.push({ url: String(url), method: init.method, hasBody: Boolean(init.body) });
+			if (calls.length === 1) return new Response("", { status: 303, headers: { location: "https://crawl.example.com/step" } });
+			if (calls.length === 2) return new Response("", { status: 301, headers: { location: "https://crawl.example.com/final" } });
+			return new Response(JSON.stringify({ success: true, markdown: "# Followed" }), { status: 200 });
+		};
+		const { extractWithCrawl4ai } = await import(${JSON.stringify(crawl4aiModuleUrl)});
+		await extractWithCrawl4ai("https://example.com/a", undefined, { lookup: ${PUBLIC_LOOKUP} });
+		console.log(JSON.stringify({ calls }));
+	`, { CRAWL4AI_BASE_URL: "https://crawl.example.com" });
+	assert.equal(child.status, 0, child.stderr);
+	assert.deepEqual(JSON.parse(child.stdout.trim()).calls, [
+		{ url: "https://crawl.example.com/md", method: "POST", hasBody: true },
+		{ url: "https://crawl.example.com/step", method: "GET", hasBody: false },
+		{ url: "https://crawl.example.com/final", method: "GET", hasBody: false },
+	]);
+});
+
 test("Crawl4AI keeps the loopback exemption on the configured origin and blocks a pivot to another loopback service", async () => {
 	const child = runChild(`
 		let calls = [];

@@ -146,16 +146,21 @@ export async function extractWithCrawl4ai(
 		body: JSON.stringify({ url, f: MARKDOWN_FILTER }),
 		signal: requestSignal(options?.timeoutMs ?? EXTRACT_TIMEOUT_MS, signal),
 	};
+	let seeOther = false;
 	const activityId = activityMonitor.logStart({ type: "fetch", url: requestUrl.toString() });
 	try {
 		const response = await fetchRemoteUrl(requestUrl, init, {
 			...ssrf,
 			allowLoopback: isLoopbackApiUrl(requestUrl),
 			onRedirect: ({ to, init: redirectInit, response }) => {
+				// 303 genuinely means "GET the other resource", and it is final: once a hop has turned the
+				// chain into a GET, no later hop may resurrect the extraction body.
+				if (response.status === 303) seeOther = true;
 				// 301/302 are the hops a reverse proxy in front of a self-hosted instance actually emits, and
 				// fetchRemoteUrl turns those into a bodyless GET that /md cannot serve, so replay the POST.
-				// 303 genuinely means "GET the other resource", and 307/308 already keep the method.
-				const nextInit = response.status === 301 || response.status === 302 ? init : redirectInit;
+				// 307/308 already keep the method, so their init needs no help.
+				const replayPost = !seeOther && (response.status === 301 || response.status === 302);
+				const nextInit = replayPost ? init : redirectInit;
 				// The bearer token only ever goes to the configured origin.
 				return to.origin === requestUrl.origin ? nextInit : { ...nextInit, headers: { "Content-Type": "application/json" } };
 			},
